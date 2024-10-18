@@ -88,6 +88,8 @@ unsigned long bambuLastTime = millis();
 unsigned long haLastTime = millis();
 unsigned long bambuCheckTime = millis();//mqtt定时任务
 unsigned long haCheckTime = millis();
+unsigned long bambuLastConnectTime;
+const unsigned int BambuConnectInterval = 3000;
 int inLed = 2;//跑马灯led变量
 int waitLed = 2;
 int completeLed = 2;
@@ -242,50 +244,27 @@ void statePublish(String content){
 
 //连接拓竹mqtt
 void connectBambuMQTT() {
-    int count = 1;
-    while (!bambuClient.connected()) {
-        count ++;
-        Serial.println("尝试连接拓竹mqtt|"+bambu_mqtt_id+"|"+bambu_mqtt_user+"|"+bambu_mqtt_password);
-        if (bambuClient.connect(bambu_mqtt_id.c_str(), bambu_mqtt_user.c_str(), bambu_mqtt_password.c_str())) {
-            Serial.println("连接成功!");
-            //Serial.println(bambu_topic_subscribe);
-            bambuClient.subscribe(bambu_topic_subscribe.c_str());
-            ledAll(ledR,ledG,ledB);
-        } else {
-            Serial.print("连接失败，失败原因:");
-            Serial.print(bambuClient.state());
-            Serial.println("在一秒后重新连接");
-            mc.stop();
-            sv.pull();
-            if (WiFi.status() != WL_CONNECTED) {
-                Serial.println("WiFi连接已断开,正在尝试重连...");
-                connectWF(wifiName, wifiKey);
-            }
-            delay(1000);
-            ledAll(255,0,0);
-        }
-
-        if (count > 10){
-            ledAll(255,0,0);
-            Serial.println("拓竹连接超时!请检查你的配置");
-            Serial.println("拓竹ip地址["+String(bambu_mqtt_broker)+"]");
-            Serial.println("拓竹序列号["+String(bambu_device_serial)+"]");
-            Serial.println("拓竹访问码["+String(bambu_mqtt_password)+"]");
-            Serial.println("本次输出[]内没有内置空格!");
-            Serial.println("你将有两种选择:");
-            Serial.println("1:已经确认我的配置没有问题!继续重试!");
-            Serial.println("2:我的配置有误,删除配置重新书写");
-            Serial.println("请输入你的选择:");
-            int getCount = 1;
-            while (Serial.available() == 0){
-                if (getCount > 50){ESP.restart();}
-                Serial.print(".");
-                delay(100);
-                getCount += 1;
-            }
-            String content = Serial.readString();
-            if (content == "2"){if(LittleFS.remove("/config.json")){Serial.println("SUCCESS!");ESP.restart();}}
-            ESP.restart();
+    bambuLastConnectTime = millis();
+    bambuClient.setServer(bambu_mqtt_broker.c_str(), 8883);
+    Serial.println("尝试连接拓竹mqtt|"+bambu_mqtt_id+"|"+bambu_mqtt_user+"|"+bambu_mqtt_password);
+    if (bambuClient.connect(bambu_mqtt_id.c_str(), bambu_mqtt_user.c_str(), bambu_mqtt_password.c_str())) {
+        Serial.println("连接成功!");
+        //Serial.println(bambu_topic_subscribe);
+        bambuClient.subscribe(bambu_topic_subscribe.c_str());
+        ledAll(ledR,ledG,ledB);
+    } else {
+        Serial.print("连接失败，失败原因:");
+        Serial.print(bambuClient.state());
+        Serial.println("拓竹ip地址["+String(bambu_mqtt_broker)+"]");
+        Serial.println("拓竹序列号["+String(bambu_device_serial)+"]");
+        Serial.println("拓竹访问码["+String(bambu_mqtt_password)+"]");
+        Serial.println("等待重新连接");
+        mc.stop();
+        sv.pull();
+        ledAll(255, 0, 0);
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("WiFi连接已断开,正在尝试重连...");
+            connectWF(wifiName, wifiKey);
         }
     }
 }
@@ -556,6 +535,8 @@ void haCallback(char* topic, byte* payload, unsigned int length) {
     }else if (data["command"] == "bambuSID"){
         CData["bambu_device_serial"] = data["value"].as<String>();
         bambu_device_serial = data["value"].as<String>();
+        bambu_topic_subscribe = "device/" + String(bambu_device_serial) + "/report";
+        bambu_topic_publish = "device/" + String(bambu_device_serial) + "/request";
     }else if (data["command"] == "bambuKey"){
         CData["bambu_mqtt_password"] = data["value"].as<String>();
         bambu_mqtt_password = data["value"].as<String>();
@@ -920,7 +901,6 @@ void setup() {
     haClient.setCallback(haCallback);
     haClient.setBufferSize(4096);
     
-    connectBambuMQTT();
     connectHaMQTT();
 
     JsonDocument haData;
@@ -961,17 +941,20 @@ void setup() {
 }
 
 void loop() {
-    if (!bambuClient.connected()) {
-        connectBambuMQTT();
-    }
-    bambuClient.loop();
-    
     if (!haClient.connected()) {
         connectHaMQTT();
     }
     haClient.loop();
+    unsigned long nowTime = millis();
+    if (!bambuClient.connected() && nowTime - bambuLastConnectTime >= BambuConnectInterval) {
+        connectBambuMQTT();
+    }
+    if (!bambuClient.connected()) {
+        return;
+    }
+    bambuClient.loop();
 
-    unsigned long nowTime =  millis();
+    nowTime = millis();
     if (nowTime-bambuLastTime > bambuRenewTime and nowTime-bambuCheckTime > bambuRenewTime*0.8){
         bambuTimerCallback();
         bambuCheckTime = millis();
