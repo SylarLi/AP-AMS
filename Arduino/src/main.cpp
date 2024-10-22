@@ -89,7 +89,7 @@ unsigned long haLastTime = millis();
 unsigned long bambuCheckTime = millis();//mqtt定时任务
 unsigned long haCheckTime = millis();
 unsigned long bambuLastConnectTime;
-const unsigned int BambuConnectInterval = 3000;
+const unsigned int BambuConnectInterval = 10000;
 int inLed = 2;//跑马灯led变量
 int waitLed = 2;
 int completeLed = 2;
@@ -244,7 +244,6 @@ void statePublish(String content){
 
 //连接拓竹mqtt
 void connectBambuMQTT() {
-    bambuLastConnectTime = millis();
     bambuClient.setServer(bambu_mqtt_broker.c_str(), 8883);
     Serial.println("尝试连接拓竹mqtt|"+bambu_mqtt_id+"|"+bambu_mqtt_user+"|"+bambu_mqtt_password);
     if (bambuClient.connect(bambu_mqtt_id.c_str(), bambu_mqtt_user.c_str(), bambu_mqtt_password.c_str())) {
@@ -252,16 +251,20 @@ void connectBambuMQTT() {
         //Serial.println(bambu_topic_subscribe);
         bambuClient.subscribe(bambu_topic_subscribe.c_str());
         ledAll(ledR,ledG,ledB);
+        bambuLastConnectTime = millis();
     } else {
         Serial.print("连接失败，失败原因:");
-        Serial.print(bambuClient.state());
+        Serial.println(bambuClient.state());
         Serial.println("拓竹ip地址["+String(bambu_mqtt_broker)+"]");
         Serial.println("拓竹序列号["+String(bambu_device_serial)+"]");
         Serial.println("拓竹访问码["+String(bambu_mqtt_password)+"]");
-        Serial.println("等待重新连接");
+        Serial.print("等待");
+        Serial.print(BambuConnectInterval / 1000);
+        Serial.println("秒后重新连接...");
         mc.stop();
         sv.pull();
         ledAll(255, 0, 0);
+        bambuLastConnectTime = millis();
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("WiFi连接已断开,正在尝试重连...");
             connectWF(wifiName, wifiKey);
@@ -470,11 +473,11 @@ void connectHaMQTT() {
     while (!haClient.connected()) {
         count ++;
         Serial.println("尝试连接ha mqtt|"+ha_mqtt_broker+"|"+ha_mqtt_user+"|"+ha_mqtt_password+"|"+String(ESP.getChipId(), HEX));
+        haClient.setServer(ha_mqtt_broker.c_str(),1883);
         if (haClient.connect(String(ESP.getChipId(), HEX).c_str(), ha_mqtt_user.c_str(), ha_mqtt_password.c_str())) {
             Serial.println("连接成功!");
             //Serial.println(ha_topic_subscribe);
             haClient.subscribe(ha_topic_subscribe.c_str());
-            ledAll(ledR,ledG,ledB);
         } else {
             Serial.print("连接失败，失败原因:");
             Serial.print(haClient.state());
@@ -518,8 +521,10 @@ void haCallback(char* topic, byte* payload, unsigned int length) {
     JsonDocument data;
     deserializeJson(data, payload, length);
     serializeJsonPretty(data,Serial);
+    Serial.println();
     // 手动释放内存
     JsonDocument CData = getCData();
+    bool bambuDiff = false;
 
     if (data["command"] == "svAng"){
         sv.writeAngle(data["value"].as<String>().toInt());
@@ -530,16 +535,28 @@ void haCallback(char* topic, byte* payload, unsigned int length) {
         CData["wifiKey"] = data["value"].as<String>();
         wifiKey = data["value"].as<String>();
     }else if (data["command"] == "bambuIPAD"){
-        CData["bambu_mqtt_broker"] = data["value"].as<String>();
-        bambu_mqtt_broker = data["value"].as<String>();
+        String newVal = data["value"].as<String>();
+        if (bambu_mqtt_broker != newVal){    
+            CData["bambu_mqtt_broker"] = newVal;
+            bambu_mqtt_broker = newVal;
+            bambuDiff = true;
+        }
     }else if (data["command"] == "bambuSID"){
-        CData["bambu_device_serial"] = data["value"].as<String>();
-        bambu_device_serial = data["value"].as<String>();
-        bambu_topic_subscribe = "device/" + String(bambu_device_serial) + "/report";
-        bambu_topic_publish = "device/" + String(bambu_device_serial) + "/request";
+        String newVal = data["value"].as<String>();
+        if (bambu_device_serial != newVal){
+            CData["bambu_device_serial"] = newVal;
+            bambu_device_serial = newVal;
+            bambu_topic_subscribe = "device/" + String(bambu_device_serial) + "/report";
+            bambu_topic_publish = "device/" + String(bambu_device_serial) + "/request";
+            bambuDiff = true;
+        }
     }else if (data["command"] == "bambuKey"){
-        CData["bambu_mqtt_password"] = data["value"].as<String>();
-        bambu_mqtt_password = data["value"].as<String>();
+        String newVal = data["value"].as<String>();
+        if (bambu_mqtt_password != newVal){    
+            CData["bambu_mqtt_password"] = newVal;
+            bambu_mqtt_password = newVal;
+            bambuDiff = true;
+        }
     }else if (data["command"] == "LedBri"){
         ledBrightness = data["value"].as<String>().toInt();
         leds.setBrightness(ledBrightness);
@@ -620,6 +637,8 @@ void haCallback(char* topic, byte* payload, unsigned int length) {
     haClient.publish(("AMS/"+String(filamentID)+"/filaLig/rgb").c_str(),((String(ledR)+","+String(ledG)+","+String(ledB))).c_str());
     haClient.publish(("AMS/"+String(filamentID)+"/filamentTemp").c_str(),String(filamentTemp).c_str());
     haClient.publish(("AMS/"+String(filamentID)+"/filamentType").c_str(),String(filamentType).c_str());
+
+    if (bambuDiff) bambuClient.disconnect();
 }
 
 //定时任务
@@ -644,6 +663,7 @@ void haTimerCallback() {
     haClient.publish(("AMS/"+String(filamentID)+"/svState").c_str(),sv.getState().c_str());
     haClient.publish(("AMS/"+String(filamentID)+"/backTime").c_str(),String(backTime).c_str());
     haClient.publish(("AMS/"+String(filamentID)+"/filaLig/rgb").c_str(),((String(ledR)+","+String(ledG)+","+String(ledB))).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/bri").c_str(),String(ledBrightness).c_str());
     haClient.publish(("AMS/"+String(filamentID)+"/filamentTemp").c_str(),String(filamentTemp).c_str());
     haClient.publish(("AMS/"+String(filamentID)+"/filamentType").c_str(),String(filamentType).c_str());
     haClient.publish(("AMS/"+String(filamentID)+"/amsStatus").c_str(),AmsStatus.c_str());
@@ -894,14 +914,12 @@ void setup() {
     pinMode(bufferPin2, INPUT_PULLDOWN_16);
 
     bambuWifiClient.setInsecure();
-    bambuClient.setServer(bambu_mqtt_broker.c_str(), 8883);
     bambuClient.setCallback(bambuCallback);
     bambuClient.setBufferSize(4096);
-    haClient.setServer(ha_mqtt_broker.c_str(),1883);
     haClient.setCallback(haCallback);
     haClient.setBufferSize(4096);
     
-    connectHaMQTT();
+    connectHaMQTT();    
 
     JsonDocument haData;
     JsonArray discoverList = haData["discovery_topic"].to<JsonArray>();
@@ -935,8 +953,7 @@ void setup() {
     Serial.println("");
 
     haClient.publish(("AMS/"+String(filamentID)+"/filaLig/swi").c_str(),"{\"command\":\"filaLigswi\",\"value\":\"ON\"}");
-    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/bri").c_str(),String(ledBrightness).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/rgb").c_str(),((String(ledR)+","+String(ledG)+","+String(ledB))).c_str());
+    haTimerCallback();
     Serial.println("-=-=-=setup执行完成!=-=-=-");
 }
 
@@ -946,6 +963,17 @@ void loop() {
     }
     haClient.loop();
     unsigned long nowTime = millis();
+    if (nowTime-haLastTime > haRenewTime and nowTime-haCheckTime > haRenewTime*0.8){
+        haTimerCallback();
+        haCheckTime = millis();
+        leds.setPixelColor(0,leds.Color(10,10,255));
+        leds.show();
+        delay(10);
+        leds.setPixelColor(0,leds.Color(0,0,0));
+        leds.show();
+    }
+
+    nowTime = millis();
     if (!bambuClient.connected() && nowTime - bambuLastConnectTime >= BambuConnectInterval) {
         connectBambuMQTT();
     }
@@ -953,21 +981,11 @@ void loop() {
         return;
     }
     bambuClient.loop();
-
     nowTime = millis();
     if (nowTime-bambuLastTime > bambuRenewTime and nowTime-bambuCheckTime > bambuRenewTime*0.8){
         bambuTimerCallback();
         bambuCheckTime = millis();
         leds.setPixelColor(0,leds.Color(10,255,10));
-        leds.show();
-        delay(10);
-        leds.setPixelColor(0,leds.Color(0,0,0));
-        leds.show();
-    }
-    if (nowTime-haLastTime > haRenewTime and nowTime-haCheckTime > haRenewTime*0.8){
-        haTimerCallback();
-        haCheckTime = millis();
-        leds.setPixelColor(0,leds.Color(10,10,255));
         leds.show();
         delay(10);
         leds.setPixelColor(0,leds.Color(0,0,0));
