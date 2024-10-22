@@ -958,6 +958,10 @@ void setup() {
 }
 
 void loop() {
+    if (bambuClient.connected()) {
+        bambuClient.loop();
+    }
+
     if (!haClient.connected()) {
         connectHaMQTT();
     }
@@ -980,7 +984,6 @@ void loop() {
     if (!bambuClient.connected()) {
         return;
     }
-    bambuClient.loop();
     nowTime = millis();
     if (nowTime-bambuLastTime > bambuRenewTime and nowTime-bambuCheckTime > bambuRenewTime*0.8){
         bambuTimerCallback();
