@@ -8,8 +8,6 @@
 #include <Servo.h>
 #include <Adafruit_NeoPixel.h>
 
-#define MSG_BUFFER_SIZE	(4096)//mqtt服务器的配置
-
 //-=-=-=-=-=-=-=-=↓用户配置↓-=-=-=-=-=-=-=-=-=-=
 String wifiName;//
 String wifiKey;//
@@ -42,17 +40,16 @@ String bambu_status = "{\"pushing\": {\"sequence_id\": \"0\", \"command\": \"pus
 int servoPin = 13;//舵机引脚
 int motorPin1 = 4;//电机一号引脚
 int motorPin2 = 5;//电机二号引脚
-int bufferPin1 = 14;//缓冲器1
-int bufferPin2 = 16;//缓冲器2
-unsigned int bambuRenewTime = 1250;//拓竹更新时间
+unsigned int bambuRenewTime = 1000;//拓竹更新时间
 unsigned int haRenewTime = 3000;//ha推送时间
-int backTime = 1000;
+unsigned int backTime = 1000;
 unsigned int ledBrightness;//led默认亮度
 String filamentType;
 int filamentTemp;
 int ledR;
 int ledG;
 int ledB;
+int ledColor;
 #define ledPin 12//led引脚
 #define ledPixels 3//led数量
 //-=-=-=-=-=-↑系统配置↑-=-=-=-=-=-=-=-=-=
@@ -75,8 +72,6 @@ long NeedStopTime = 0;//用于判断是否要发送停止信息
 String AmsStatus;
 //-=-=-=-=-=-=end
 
-unsigned long lastMsg = 0;
-char msg[MSG_BUFFER_SIZE];
 WiFiClientSecure bambuWifiClient;
 PubSubClient bambuClient(bambuWifiClient);
 WiFiClient haWifiClient;
@@ -84,66 +79,70 @@ PubSubClient haClient(haWifiClient);
 
 Adafruit_NeoPixel leds(ledPixels, ledPin, NEO_GRB + NEO_KHZ800);
 
-unsigned long bambuLastTime = millis();
-unsigned long haLastTime = millis();
 unsigned long bambuCheckTime = millis();//mqtt定时任务
-unsigned long haCheckTime = millis();
 unsigned long bambuLastConnectTime;
 const unsigned int BambuConnectInterval = 10000;
-int inLed = 2;//跑马灯led变量
-int waitLed = 2;
-int completeLed = 2;
+unsigned long haCheckTime = millis();
+unsigned long haLastConnectTime;
+bool haTopicInitialized;
+const unsigned int HAConnectInterval = 3000;
+const int WFConnectTimeout = 60000;
+const int WFBlinkInterval = 200;
+
+unsigned int ColorRed = leds.Color(255, 0, 0);
+unsigned int ColorGreen = leds.Color(0, 255, 0);
+unsigned int ColorBlue = leds.Color(0, 0, 255);
+unsigned int ColorTransparent = leds.Color(0, 0, 0);
+unsigned int ColorWhite = leds.Color(255, 255, 255);
 
 Servo servo;//初始化舵机
 
-void ledAll(unsigned int r, unsigned int g, unsigned int b) {//led填充
-    leds.fill(leds.Color(r,g,b));
+void ledAll(unsigned int color) {//led填充
+    leds.fill(color);
     leds.show();
 }
 
 //连接wifi
-void connectWF(String wn,String wk) {
-    ledAll(0,0,0);
-    int led = 2;
-    int count = 1;
+void connectWF(String wn, String wk) {
     WiFi.begin(wn, wk);
     Serial.print("连接到wifi [" + String(wifiName) + "]");
-    while (WiFi.status() != WL_CONNECTED) {
-        count ++;
-        if (led == -1){
-            led = 2;
-            ledAll(0,0,0);
-        }else{
-            leds.setPixelColor(led,leds.Color(0,255,0));
-            leds.show();
-            led--;
-        }
+    int led = 0;
+    int count = 0;
+    int duration = WFConnectTimeout;
+    while (WiFi.status() != WL_CONNECTED && duration > 0) {
+        leds.setPixelColor(led, count % 2 == 0 ? ColorRed : ColorTransparent);
+        leds.show();
         Serial.print(".");
-        delay(250);
-        if (count > 100){
-            ledAll(255,0,0);
-            Serial.println("WIFI连接超时!请检查你的wifi配置");
-            Serial.println("WIFI名["+String(wifiName)+"]");
-            Serial.println("WIFI密码["+String(wifiKey)+"]");
-            Serial.println("本次输出[]内没有内置空格!");
-            Serial.println("你将有两种选择:");
-            Serial.println("1:已经确认我的wifi配置没有问题!继续重试!");
-            Serial.println("2:我的配置有误,删除配置重新书写");
-            Serial.println("请输入你的选择:");
-            while (Serial.available() == 0){
-                Serial.print(".");
-                delay(100);
-            }
-            String content = Serial.readString();
-            if (content == "2"){if(LittleFS.remove("/config.json")){Serial.println("SUCCESS!");ESP.restart();}}
-            ESP.restart();
-        }
+        delay(WFBlinkInterval);
+        duration -= WFBlinkInterval;
+        count = count + 1;
     }
-    Serial.println("");
-    Serial.println("WIFI已连接");
-    Serial.println("IP: ");
-    Serial.println(WiFi.localIP());
-    ledAll(50,255,50);
+    if (WiFi.status() != WL_CONNECTED) {
+        leds.setPixelColor(led, ColorRed);
+        leds.show();
+        Serial.println("WIFI连接超时!请检查你的wifi配置");
+        Serial.println("WIFI名["+String(wifiName)+"]");
+        Serial.println("WIFI密码["+String(wifiKey)+"]");
+        Serial.println("本次输出[]内没有内置空格!");
+        Serial.println("你将有两种选择:");
+        Serial.println("1:已经确认我的wifi配置没有问题!继续重试!");
+        Serial.println("2:我的配置有误,删除配置重新书写");
+        Serial.println("请输入你的选择:");
+        while (Serial.available() == 0){
+            Serial.print(".");
+            delay(100);
+        }
+        String content = Serial.readString();
+        if (content == "2"){if(LittleFS.remove("/config.json")){Serial.println("SUCCESS!");ESP.restart();}}
+        ESP.restart();
+    } else {
+        leds.setPixelColor(led, ledColor);
+        leds.show();
+        Serial.println("");
+        Serial.println("WIFI已连接");
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+    }
 }
 
 //获取配置数据
@@ -244,16 +243,22 @@ void statePublish(String content){
 
 //连接拓竹mqtt
 void connectBambuMQTT() {
-    bambuClient.setServer(bambu_mqtt_broker.c_str(), 8883);
+    mc.stop();
+    sv.pull();
+    int led = 2;
+    leds.setPixelColor(led, ColorRed);
+    leds.show();
     Serial.println("尝试连接拓竹mqtt|"+bambu_mqtt_id+"|"+bambu_mqtt_user+"|"+bambu_mqtt_password);
+    bambuClient.setServer(bambu_mqtt_broker.c_str(), 8883);
     if (bambuClient.connect(bambu_mqtt_id.c_str(), bambu_mqtt_user.c_str(), bambu_mqtt_password.c_str())) {
-        Serial.println("连接成功!");
-        //Serial.println(bambu_topic_subscribe);
-        bambuClient.subscribe(bambu_topic_subscribe.c_str());
-        ledAll(ledR,ledG,ledB);
         bambuLastConnectTime = millis();
+        bambuClient.subscribe(bambu_topic_subscribe.c_str());
+        leds.setPixelColor(led, ledColor);
+        leds.show();
+        Serial.println("连接拓竹mqtt成功!");
     } else {
-        Serial.print("连接失败，失败原因:");
+        bambuLastConnectTime = millis();
+        Serial.print("连接拓竹mqtt失败，失败原因:");
         Serial.println(bambuClient.state());
         Serial.println("拓竹ip地址["+String(bambu_mqtt_broker)+"]");
         Serial.println("拓竹序列号["+String(bambu_device_serial)+"]");
@@ -261,10 +266,6 @@ void connectBambuMQTT() {
         Serial.print("等待");
         Serial.print(BambuConnectInterval / 1000);
         Serial.println("秒后重新连接...");
-        mc.stop();
-        sv.pull();
-        ledAll(255, 0, 0);
-        bambuLastConnectTime = millis();
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("WiFi连接已断开,正在尝试重连...");
             connectWF(wifiName, wifiKey);
@@ -304,7 +305,6 @@ void bambuCallback(char* topic, byte* payload, unsigned int length) {
             //Serial.println(" bytes");
             statePublish("Free memory: "+String(ESP.getFreeHeap())+" bytes");
             statePublish("-=-=-=-=-");}
-        bambuLastTime = millis();
     }
 
     if (command.indexOf("APAMS|") != -1){
@@ -459,62 +459,18 @@ void bambuCallback(char* topic, byte* payload, unsigned int length) {
                 }
             }else{
                 statePublish("本机通道与本次换色无关，无需换色");
-                ledAll(255,255,255);
+                ledAll(ColorWhite);
             }
         }
     }else{
-        ledAll(ledR,ledG,ledB);
+        ledAll(ledColor);
     }
 }
 
-//连接hamqtt
-void connectHaMQTT() {
-    int count = 1;
-    while (!haClient.connected()) {
-        count ++;
-        Serial.println("尝试连接ha mqtt|"+ha_mqtt_broker+"|"+ha_mqtt_user+"|"+ha_mqtt_password+"|"+String(ESP.getChipId(), HEX));
-        haClient.setServer(ha_mqtt_broker.c_str(),1883);
-        if (haClient.connect(String(ESP.getChipId(), HEX).c_str(), ha_mqtt_user.c_str(), ha_mqtt_password.c_str())) {
-            Serial.println("连接成功!");
-            //Serial.println(ha_topic_subscribe);
-            haClient.subscribe(ha_topic_subscribe.c_str());
-        } else {
-            Serial.print("连接失败，失败原因:");
-            Serial.print(haClient.state());
-            Serial.println("在一秒后重新连接");
-            mc.stop();
-            sv.pull();
-            if (WiFi.status() != WL_CONNECTED) {
-                Serial.println("WiFi连接已断开,正在尝试重连...");
-                connectWF(wifiName, wifiKey);
-            }
-            delay(1000);
-            ledAll(255,0,0);
-        }
-
-        if (count > 10){
-            ledAll(255,0,0);
-            Serial.println("HA连接超时!请检查你的配置");
-            Serial.println("HAip地址["+String(ha_mqtt_broker)+"]");
-            Serial.println("HA账号["+String(ha_mqtt_user)+"]");
-            Serial.println("HA密码["+String(ha_mqtt_password)+"]");
-            Serial.println("本次输出[]内没有内置空格!");
-            Serial.println("你将有两种选择:");
-            Serial.println("1:已经确认我的配置没有问题!继续重试!");
-            Serial.println("2:我的配置有误,删除配置重新书写");
-            Serial.println("请输入你的选择:");
-            int getCount = 1;
-            while (Serial.available() == 0){
-                if (getCount > 50){ESP.restart();}
-                Serial.print(".");
-                delay(100);
-                getCount += 1;
-            }
-            String content = Serial.readString();
-            if (content == "2"){if(LittleFS.remove("/config.json")){Serial.println("SUCCESS!");ESP.restart();}}
-            ESP.restart();
-        }
-    }
+//定时任务
+void bambuTimerCallback() {
+    if (debug){Serial.println("bambu定时任务执行！");}
+    bambuClient.publish(bambu_topic_publish.c_str(), bambu_status.c_str());
 }
 
 void haCallback(char* topic, byte* payload, unsigned int length) {
@@ -604,6 +560,7 @@ void haCallback(char* topic, byte* payload, unsigned int length) {
             ledR = r;
             ledG = g;
             ledB = b;
+            ledColor = leds.Color(ledR, ledG, ledB);
 
             CData["ledR"] = ledR;
             CData["ledG"] = ledG;
@@ -639,36 +596,6 @@ void haCallback(char* topic, byte* payload, unsigned int length) {
     haClient.publish(("AMS/"+String(filamentID)+"/filamentType").c_str(),String(filamentType).c_str());
 
     if (bambuDiff) bambuClient.disconnect();
-}
-
-//定时任务
-void bambuTimerCallback() {
-    if (debug){Serial.println("bambu定时任务执行！");}
-    bambuClient.publish(bambu_topic_publish.c_str(), bambu_status.c_str());
-}
-//定时任务
-void haTimerCallback() {
-    if (debug){Serial.println("ha定时任务执行！");}
-    haClient.publish(("AMS/"+String(filamentID)+"/nowTun").c_str(),String(filamentID).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/nextTun").c_str(),String(nextFilament).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/onTun").c_str(),String(lastFilament).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/svAng").c_str(),String(sv.getAngle()).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/wifiName").c_str(),wifiName.c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/wifiKey").c_str(),wifiKey.c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/bambuIPAD").c_str(),bambu_mqtt_broker.c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/bambuSID").c_str(),bambu_device_serial.c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/bambuKey").c_str(),bambu_mqtt_password.c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/LedBri").c_str(),String(ledBrightness).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/mcState").c_str(),mc.getState().c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/svState").c_str(),sv.getState().c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/backTime").c_str(),String(backTime).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/rgb").c_str(),((String(ledR)+","+String(ledG)+","+String(ledB))).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/bri").c_str(),String(ledBrightness).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/filamentTemp").c_str(),String(filamentTemp).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/filamentType").c_str(),String(filamentType).c_str());
-    haClient.publish(("AMS/"+String(filamentID)+"/amsStatus").c_str(),AmsStatus.c_str());
-
-    haLastTime = millis();
 }
 
 JsonArray initText(String name,String id,String detail,JsonArray array){
@@ -722,205 +649,30 @@ JsonArray initLight(String name,String id,String detail,JsonArray array){
     return array;
 }
 
-void setup() {
-    leds.begin();
-    Serial.begin(115200);
-    LittleFS.begin();
-    delay(1);
-    leds.clear();
-    leds.show();
+//定时任务
+void haTimerCallback() {
+    if (debug){Serial.println("ha定时任务执行！");}
+    haClient.publish(("AMS/"+String(filamentID)+"/nowTun").c_str(),String(filamentID).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/nextTun").c_str(),String(nextFilament).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/onTun").c_str(),String(lastFilament).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/svAng").c_str(),String(sv.getAngle()).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/wifiName").c_str(),wifiName.c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/wifiKey").c_str(),wifiKey.c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/bambuIPAD").c_str(),bambu_mqtt_broker.c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/bambuSID").c_str(),bambu_device_serial.c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/bambuKey").c_str(),bambu_mqtt_password.c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/LedBri").c_str(),String(ledBrightness).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/mcState").c_str(),mc.getState().c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/svState").c_str(),sv.getState().c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/backTime").c_str(),String(backTime).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/rgb").c_str(),((String(ledR)+","+String(ledG)+","+String(ledB))).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/bri").c_str(),String(ledBrightness).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/filamentTemp").c_str(),String(filamentTemp).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/filamentType").c_str(),String(filamentType).c_str());
+    haClient.publish(("AMS/"+String(filamentID)+"/amsStatus").c_str(),AmsStatus.c_str());
+}
 
-    if (!LittleFS.exists("/config.json")) {
-        ledAll(255,0,0);
-        Serial.println("");
-        Serial.println("不存在配置文件!创建配置文件!");
-        Serial.println("1.请输入wifi名:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        wifiName = Serial.readString();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+wifiName);
-
-        delay(500);
-        ledAll(255,0,0);
-        
-        Serial.println("2.请输入wifi密码:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        wifiKey = Serial.readString();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+wifiKey);
-        
-        delay(500);
-        ledAll(255,0,0);
-
-        Serial.println("3.请输入拓竹打印机的ip地址:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        bambu_mqtt_broker = Serial.readString();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+bambu_mqtt_broker);
-        
-        delay(500);
-        ledAll(255,0,0);
-
-        Serial.println("4.请输入拓竹打印机的访问码:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        bambu_mqtt_password = Serial.readString();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+bambu_mqtt_password);
-        
-        delay(500);
-        ledAll(255,0,0);
-        
-        Serial.println("5.请输入拓竹打印机的序列号:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        bambu_device_serial = Serial.readString();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+bambu_device_serial);
-        
-        delay(500);
-        ledAll(255,0,0);
-    
-        Serial.println("6.请输入本机通道编号:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        filamentID = Serial.readString().toInt();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+String(filamentID));
-        
-        delay(500);
-        ledAll(255,0,0);
-    
-        Serial.println("7.请输入ha服务器地址:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        ha_mqtt_broker = Serial.readString();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+ha_mqtt_broker);
-        
-        delay(500);
-        ledAll(255,0,0);
-    
-        Serial.println("8.请输入ha账号(无则输入“NONE”):");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        String message = Serial.readString();
-        if (message != "NONE"){
-            ha_mqtt_user = message;
-        }
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+message);
-        
-        delay(500);
-        ledAll(255,0,0);
-    
-        Serial.println("9.请输入ha密码(无则输入“NONE”):");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-        String tmpmessage = Serial.readString();
-        if (tmpmessage != "NONE"){
-            ha_mqtt_password = tmpmessage;
-        }
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+tmpmessage);
-
-        delay(500);
-        ledAll(255,0,0);
-
-        Serial.println("10.请输入回抽延时[单位毫秒]:");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-
-        backTime = Serial.readString().toInt();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+String(backTime));
-        
-        Serial.println("11.请输入本通道耗材温度(后续可更改):");
-        while (!(Serial.available() > 0)){
-            delay(100);
-        }
-
-        filamentTemp = Serial.readString().toInt();
-        ledAll(0,255,0);
-        Serial.println("获取到的数据-> "+String(filamentTemp));
-        
-        JsonDocument Cdata;
-        Cdata["wifiName"] = wifiName;
-        Cdata["wifiKey"] = wifiKey;
-        Cdata["bambu_mqtt_broker"] = bambu_mqtt_broker;
-        Cdata["bambu_mqtt_password"] = bambu_mqtt_password;
-        Cdata["bambu_device_serial"] = bambu_device_serial;
-        Cdata["filamentID"] = filamentID;
-        Cdata["ledBrightness"] = 100;
-        Cdata["ha_mqtt_broker"] = ha_mqtt_broker;
-        Cdata["ha_mqtt_user"] = ha_mqtt_user;
-        Cdata["ha_mqtt_password"] = ha_mqtt_password;
-        Cdata["backTime"] = backTime;
-        Cdata["filamentTemp"]  = filamentTemp;
-        Cdata["filamentType"] = filamentType;
-        ledR = 0;
-        ledG = 0;
-        ledB = 255;
-        Cdata["ledR"] = ledR;
-        Cdata["ledG"] = ledG;
-        Cdata["ledB"] = ledB;
-        ledBrightness = 100;
-        writeCData(Cdata);
-    }else{
-        JsonDocument Cdata = getCData();
-        serializeJsonPretty(Cdata,Serial);
-        wifiName = Cdata["wifiName"].as<String>();
-        wifiKey = Cdata["wifiKey"].as<String>();
-        bambu_mqtt_broker = Cdata["bambu_mqtt_broker"].as<String>();
-        bambu_mqtt_password = Cdata["bambu_mqtt_password"].as<String>();
-        bambu_device_serial = Cdata["bambu_device_serial"].as<String>();
-        filamentID = Cdata["filamentID"].as<int>();
-        ledBrightness = Cdata["ledBrightness"].as<unsigned int>();
-        ha_mqtt_broker = Cdata["ha_mqtt_broker"].as<String>();
-        ha_mqtt_user = Cdata["ha_mqtt_user"].as<String>();
-        ha_mqtt_password = Cdata["ha_mqtt_password"].as<String>();
-        backTime = Cdata["backTime"].as<int>();
-        filamentTemp = Cdata["filamentTemp"].as<int>();
-        filamentType = Cdata["filamentType"].as<String>();
-        ledR = Cdata["ledR"];
-        ledG = Cdata["ledG"];
-        ledB = Cdata["ledB"];
-        ledAll(0,255,0);
-    }
-    bambu_topic_subscribe = "device/" + String(bambu_device_serial) + "/report";
-    bambu_topic_publish = "device/" + String(bambu_device_serial) + "/request";
-    ha_topic_subscribe = "AMS/"+String(filamentID);
-    leds.setBrightness(ledBrightness);
-
-    connectWF(wifiName,wifiKey);
-
-    servo.attach(servoPin,500,2500);
-    //servo.write(20);//初始20°方便后续调试
-
-    pinMode(bufferPin1, INPUT_PULLDOWN_16);
-    pinMode(bufferPin2, INPUT_PULLDOWN_16);
-
-    bambuWifiClient.setInsecure();
-    bambuClient.setCallback(bambuCallback);
-    bambuClient.setBufferSize(4096);
-    haClient.setCallback(haCallback);
-    haClient.setBufferSize(4096);
-    
-    connectHaMQTT();    
-
+void initHATopic() {
     JsonDocument haData;
     JsonArray discoverList = haData["discovery_topic"].to<JsonArray>();
 
@@ -952,169 +704,402 @@ void setup() {
     serializeJsonPretty(haData,Serial);
     Serial.println("");
 
-    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/swi").c_str(),"{\"command\":\"filaLigswi\",\"value\":\"ON\"}");
     haTimerCallback();
+    haClient.publish(("AMS/"+String(filamentID)+"/filaLig/swi").c_str(),"{\"command\":\"filaLigswi\",\"value\":\"ON\"}");
+}
+
+//连接ha mqtt
+void connectHaMQTT() {
+    int led = 1;
+    leds.setPixelColor(led, ColorRed);
+    leds.show();
+    Serial.println("尝试连接ha mqtt|"+ha_mqtt_broker+"|"+ha_mqtt_user+"|"+ha_mqtt_password+"|"+String(ESP.getChipId(), HEX));
+    haClient.setServer(ha_mqtt_broker.c_str(),1883);
+    if (haClient.connect(String(ESP.getChipId(), HEX).c_str(), ha_mqtt_user.c_str(), ha_mqtt_password.c_str())) {
+        haLastConnectTime = millis();
+        if (!haTopicInitialized) {
+            haTopicInitialized = true;
+            initHATopic();
+        }
+        haClient.subscribe(ha_topic_subscribe.c_str());
+        leds.setPixelColor(led, ledColor);
+        leds.show();
+        Serial.println("连接ha mqtt成功!");
+    } else {
+        haLastConnectTime = millis();
+        Serial.print("连接ha mqtt失败，失败原因:");
+        Serial.println(haClient.state());
+        Serial.print("等待");
+        Serial.print(HAConnectInterval / 1000);
+        Serial.println("秒后重新连接...");
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("WiFi连接已断开,正在尝试重连...");
+            connectWF(wifiName, wifiKey);
+        }
+    }
+}
+
+void initConfig() {
+    if (!LittleFS.exists("/config.json")) {
+        ledAll(ColorRed);
+        Serial.println("");
+        Serial.println("不存在配置文件!创建配置文件!");
+        Serial.println("1.请输入wifi名:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        wifiName = Serial.readString();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+wifiName);
+
+        delay(500);
+        ledAll(ColorRed);
+        
+        Serial.println("2.请输入wifi密码:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        wifiKey = Serial.readString();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+wifiKey);
+        
+        delay(500);
+        ledAll(ColorRed);
+
+        Serial.println("3.请输入拓竹打印机的ip地址:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        bambu_mqtt_broker = Serial.readString();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+bambu_mqtt_broker);
+        
+        delay(500);
+        ledAll(ColorRed);
+
+        Serial.println("4.请输入拓竹打印机的访问码:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        bambu_mqtt_password = Serial.readString();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+bambu_mqtt_password);
+        
+        delay(500);
+        ledAll(ColorRed);
+        
+        Serial.println("5.请输入拓竹打印机的序列号:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        bambu_device_serial = Serial.readString();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+bambu_device_serial);
+        
+        delay(500);
+        ledAll(ColorRed);
+    
+        Serial.println("6.请输入本机通道编号:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        filamentID = Serial.readString().toInt();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+String(filamentID));
+        
+        delay(500);
+        ledAll(ColorRed);
+    
+        Serial.println("7.请输入ha服务器地址:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        ha_mqtt_broker = Serial.readString();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+ha_mqtt_broker);
+        
+        delay(500);
+        ledAll(ColorRed);
+    
+        Serial.println("8.请输入ha账号(无则输入“NONE”):");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        String message = Serial.readString();
+        if (message != "NONE"){
+            ha_mqtt_user = message;
+        }
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+message);
+        
+        delay(500);
+        ledAll(ColorRed);
+    
+        Serial.println("9.请输入ha密码(无则输入“NONE”):");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+        String tmpmessage = Serial.readString();
+        if (tmpmessage != "NONE"){
+            ha_mqtt_password = tmpmessage;
+        }
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+tmpmessage);
+
+        delay(500);
+        ledAll(ColorRed);
+
+        Serial.println("10.请输入回抽延时[单位毫秒]:");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+
+        backTime = Serial.readString().toInt();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+String(backTime));
+        
+        Serial.println("11.请输入本通道耗材温度(后续可更改):");
+        while (!(Serial.available() > 0)){
+            delay(100);
+        }
+
+        filamentTemp = Serial.readString().toInt();
+        ledAll(ColorGreen);
+        Serial.println("获取到的数据-> "+String(filamentTemp));
+        
+        JsonDocument Cdata;
+        Cdata["wifiName"] = wifiName;
+        Cdata["wifiKey"] = wifiKey;
+        Cdata["bambu_mqtt_broker"] = bambu_mqtt_broker;
+        Cdata["bambu_mqtt_password"] = bambu_mqtt_password;
+        Cdata["bambu_device_serial"] = bambu_device_serial;
+        Cdata["filamentID"] = filamentID;
+        Cdata["ledBrightness"] = 100;
+        Cdata["ha_mqtt_broker"] = ha_mqtt_broker;
+        Cdata["ha_mqtt_user"] = ha_mqtt_user;
+        Cdata["ha_mqtt_password"] = ha_mqtt_password;
+        Cdata["backTime"] = backTime;
+        Cdata["filamentTemp"]  = filamentTemp;
+        Cdata["filamentType"] = filamentType;
+        ledR = 0;
+        ledG = 0;
+        ledB = 255;
+        ledColor = leds.Color(ledR,ledG,ledB);
+        Cdata["ledR"] = ledR;
+        Cdata["ledG"] = ledG;
+        Cdata["ledB"] = ledB;
+        ledBrightness = 100;
+        writeCData(Cdata);
+    }else{
+        JsonDocument Cdata = getCData();
+        serializeJsonPretty(Cdata,Serial);
+        wifiName = Cdata["wifiName"].as<String>();
+        wifiKey = Cdata["wifiKey"].as<String>();
+        bambu_mqtt_broker = Cdata["bambu_mqtt_broker"].as<String>();
+        bambu_mqtt_password = Cdata["bambu_mqtt_password"].as<String>();
+        bambu_device_serial = Cdata["bambu_device_serial"].as<String>();
+        filamentID = Cdata["filamentID"].as<int>();
+        ledBrightness = Cdata["ledBrightness"].as<unsigned int>();
+        ha_mqtt_broker = Cdata["ha_mqtt_broker"].as<String>();
+        ha_mqtt_user = Cdata["ha_mqtt_user"].as<String>();
+        ha_mqtt_password = Cdata["ha_mqtt_password"].as<String>();
+        backTime = Cdata["backTime"].as<int>();
+        filamentTemp = Cdata["filamentTemp"].as<int>();
+        filamentType = Cdata["filamentType"].as<String>();
+        ledR = Cdata["ledR"];
+        ledG = Cdata["ledG"];
+        ledB = Cdata["ledB"];
+        ledColor = leds.Color(ledR,ledG,ledB);
+    }
+
+    leds.setBrightness(ledBrightness);
+    ledAll(ColorRed);
+}
+
+void initBambuMQTT() {
+    bambu_topic_subscribe = "device/" + String(bambu_device_serial) + "/report";
+    bambu_topic_publish = "device/" + String(bambu_device_serial) + "/request";
+    bambuWifiClient.setInsecure();
+    bambuClient.setCallback(bambuCallback);
+    bambuClient.setBufferSize(4096);
+}
+
+void initHaMQTT() {
+    ha_topic_subscribe = "AMS/"+String(filamentID);
+    haClient.setCallback(haCallback);
+    haClient.setBufferSize(4096);
+}
+
+void bambuLoop() {
+    if (NeedStopTime != 0) {
+        if ((millis() - NeedStopTime) > backTime) {
+            mc.stop();
+            sv.pull();
+            if (haClient.connected()) {
+                statePublish("停止拔出耗材");
+            }
+            if (bambuClient.connected()) {
+                bambuClient.publish(bambu_topic_publish.c_str(),("{\"print\":{\"command\": \"APAMS|"+String(nextFilament)+"|CANPUSH\"}}").c_str());
+            }
+            NeedStopTime = 0;
+        } else if(mc.getStopState() or sv.getState() == "拉") {
+            mc.backforward();
+            sv.push();
+        }
+    }
+    if (bambuClient.connected()) {
+        bambuClient.loop();
+        if (millis() - bambuCheckTime > bambuRenewTime) {
+            bambuTimerCallback();
+            bambuCheckTime = millis();
+        }
+    } else if (millis() - bambuLastConnectTime >= BambuConnectInterval and haClient.connected()) {
+        connectBambuMQTT();
+    }
+}
+
+void haLoop() {
+    if (haClient.connected()) {
+        haClient.loop();
+        if (millis() - haCheckTime > haRenewTime){
+            haTimerCallback();
+            haCheckTime = millis();
+        }
+    }
+    else if (millis() - haLastConnectTime >= HAConnectInterval) {
+        connectHaMQTT();
+    }
+}
+
+void serialLoop() {
+    if (Serial.available() == 0 or commandStr == "") {
+        return;
+    }
+    String content;
+    if (Serial.available()>0){
+        content = Serial.readString();
+    }else if (commandStr != ""){
+        content = commandStr;
+        commandStr = "";
+    }
+
+    if (content=="delet config"){
+        if(LittleFS.remove("/config.json")){Serial.println("SUCCESS!");ESP.restart();}
+    }else if (content == "delet data")
+    {
+        if(LittleFS.remove("/data.json")){Serial.println("SUCCESS!");ESP.restart();}
+    }else if (content == "delet ha")
+    {
+        if(LittleFS.remove("/ha.json")){Serial.println("SUCCESS!");ESP.restart();}
+    }else if (content == "confirm")
+    {
+        bambuClient.publish(bambu_topic_publish.c_str(),bambu_done.c_str());
+        Serial.println("confirm SEND!");
+    }else if (content == "resume")
+    {
+        bambuClient.publish(bambu_topic_publish.c_str(),bambu_resume.c_str());
+        Serial.println("resume SEND!");
+    }else if (content == "debug")
+    {
+        debug = not debug;
+        Serial.println("debug change");
+    }else if (content == "push")
+    {
+        sv.push();
+        Serial.println("push COMPLETE");
+    }else if (content == "pull")
+    {
+        sv.pull();
+        Serial.println("pull COMPLETE");
+    }else if (content.indexOf("sv") != -1)
+    {   
+        String numberString = "";
+        for (unsigned int i = 0; i < content.length(); i++) {
+        if (isdigit(content[i])) {
+            numberString += content[i];
+        }
+        }
+        int number = numberString.toInt(); 
+        sv.writeAngle(number);
+        Serial.println("["+numberString+"]COMPLETE");
+    }else if (content == "forward" or content == "fw")
+    {
+        mc.forward();
+        Serial.println("forwarding!");
+    }else if (content == "backforward" or content == "bfw")
+    {
+        mc.backforward();
+        Serial.println("backforwarding!");
+    }else if (content == "stop"){
+        mc.stop();
+        Serial.println("Stop!");
+    }else if (content.indexOf("renewTime") != -1 or content.indexOf("rt") != -1)        {
+        String numberString = "";
+        for (unsigned int i = 0; i < content.length(); i++) {
+        if (isdigit(content[i])) {
+            numberString += content[i];
+        }}
+        unsigned int number = numberString.toInt();
+        bambuRenewTime = number;
+        Serial.println("["+numberString+"]COMPLETE");
+    }else if (content.indexOf("ledbright") != -1 or content.indexOf("lb") != -1)        {
+        String numberString = "";
+        for (unsigned int i = 0; i < content.length(); i++) {
+        if (isdigit(content[i])) {
+            numberString += content[i];
+        }}
+        unsigned int number = numberString.toInt();
+        ledBrightness = number;
+        JsonDocument Cdata = getCData();
+        Cdata["ledBrightness"] = ledBrightness;
+        writeCData(Cdata);
+        Serial.println("["+numberString+"]修改成功！亮度重启后生效");
+    }else if (content == "rgb"){
+        Serial.println("RGB Testing......");
+        ledAll(ColorRed);
+        delay(1000);
+        ledAll(ColorGreen);
+        delay(1000);
+        ledAll(ColorBlue);
+        delay(1000);
+    }else if (content == "delet all ha device")
+    {
+        File file = LittleFS.open("/ha.json", "r");
+        JsonDocument haData;
+        deserializeJson(haData, file);
+        file.close();
+        JsonArray list = haData["discovery_topic"].as<JsonArray>();
+        for (JsonVariant value : list) {
+            String topic = value.as<String>();
+            haClient.publish(topic.c_str(),"");
+            Serial.println("已删除["+topic+"]");
+        }
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    leds.begin();
+    LittleFS.begin();
+    delay(1);
+    leds.clear();
+    leds.show();
+
+    initConfig();
+
+    servo.attach(servoPin,500,2500);
+    //servo.write(20);//初始20°方便后续调试
+
+    connectWF(wifiName, wifiKey);
+    initBambuMQTT();
+    initHaMQTT();
+    connectHaMQTT();
+
     Serial.println("-=-=-=setup执行完成!=-=-=-");
 }
 
 void loop() {
-    if (bambuClient.connected()) {
-        bambuClient.loop();
-    }
-
-    if (!haClient.connected()) {
-        connectHaMQTT();
-    }
-    haClient.loop();
-    unsigned long nowTime = millis();
-    if (nowTime-haLastTime > haRenewTime and nowTime-haCheckTime > haRenewTime*0.8){
-        haTimerCallback();
-        haCheckTime = millis();
-        leds.setPixelColor(0,leds.Color(10,10,255));
-        leds.show();
-        delay(10);
-        leds.setPixelColor(0,leds.Color(0,0,0));
-        leds.show();
-    }
-
-    nowTime = millis();
-    if (!bambuClient.connected() && nowTime - bambuLastConnectTime >= BambuConnectInterval) {
-        connectBambuMQTT();
-    }
-    if (!bambuClient.connected()) {
-        return;
-    }
-    nowTime = millis();
-    if (nowTime-bambuLastTime > bambuRenewTime and nowTime-bambuCheckTime > bambuRenewTime*0.8){
-        bambuTimerCallback();
-        bambuCheckTime = millis();
-        leds.setPixelColor(0,leds.Color(10,255,10));
-        leds.show();
-        delay(10);
-        leds.setPixelColor(0,leds.Color(0,0,0));
-        leds.show();
-    }
-
-    if (not mc.getStopState()){
-        if (digitalRead(bufferPin1) == 1 or digitalRead(bufferPin2) == 1){
-        mc.stop();}
-        delay(100);
-    }
-
-    if (NeedStopTime != 0){
-        if ((millis()-NeedStopTime) > backTime){
-            statePublish("停止拔出耗材");
-            mc.stop();
-            sv.pull();
-            bambuClient.publish(bambu_topic_publish.c_str(),("{\"print\":{\"command\": \"APAMS|"+String(nextFilament)+"|CANPUSH\"}}").c_str());
-            NeedStopTime = 0;
-        }else if(mc.getStopState() or sv.getState() == "拉"){
-            mc.backforward();
-            sv.push();
-        }
-    }
-
-    if (Serial.available()>0 or commandStr != ""){
-
-        String content;
-        if (Serial.available()>0){
-            content = Serial.readString();
-        }else if (commandStr != ""){
-            content = commandStr;
-            commandStr = "";
-        }
-
-        if (content=="delet config"){
-            if(LittleFS.remove("/config.json")){Serial.println("SUCCESS!");ESP.restart();}
-        }else if (content == "delet data")
-        {
-            if(LittleFS.remove("/data.json")){Serial.println("SUCCESS!");ESP.restart();}
-        }else if (content == "delet ha")
-        {
-            if(LittleFS.remove("/ha.json")){Serial.println("SUCCESS!");ESP.restart();}
-        }else if (content == "confirm")
-        {
-            bambuClient.publish(bambu_topic_publish.c_str(),bambu_done.c_str());
-            Serial.println("confirm SEND!");
-        }else if (content == "resume")
-        {
-            bambuClient.publish(bambu_topic_publish.c_str(),bambu_resume.c_str());
-            Serial.println("resume SEND!");
-        }else if (content == "debug")
-        {
-            debug = not debug;
-            Serial.println("debug change");
-        }else if (content == "push")
-        {
-            sv.push();
-            Serial.println("push COMPLETE");
-        }else if (content == "pull")
-        {
-            sv.pull();
-            Serial.println("pull COMPLETE");
-        }else if (content.indexOf("sv") != -1)
-        {   
-            String numberString = "";
-            for (unsigned int i = 0; i < content.length(); i++) {
-            if (isdigit(content[i])) {
-                numberString += content[i];
-            }
-            }
-            int number = numberString.toInt(); 
-            sv.writeAngle(number);
-            Serial.println("["+numberString+"]COMPLETE");
-        }else if (content == "forward" or content == "fw")
-        {
-            mc.forward();
-            Serial.println("forwarding!");
-        }else if (content == "backforward" or content == "bfw")
-        {
-            mc.backforward();
-            Serial.println("backforwarding!");
-        }else if (content == "stop"){
-            mc.stop();
-            Serial.println("Stop!");
-        }else if (content.indexOf("renewTime") != -1 or content.indexOf("rt") != -1)        {
-            String numberString = "";
-            for (unsigned int i = 0; i < content.length(); i++) {
-            if (isdigit(content[i])) {
-                numberString += content[i];
-            }}
-            unsigned int number = numberString.toInt();
-            bambuRenewTime = number;
-            Serial.println("["+numberString+"]COMPLETE");
-        }else if (content.indexOf("ledbright") != -1 or content.indexOf("lb") != -1)        {
-            String numberString = "";
-            for (unsigned int i = 0; i < content.length(); i++) {
-            if (isdigit(content[i])) {
-                numberString += content[i];
-            }}
-            unsigned int number = numberString.toInt();
-            ledBrightness = number;
-            JsonDocument Cdata = getCData();
-            Cdata["ledBrightness"] = ledBrightness;
-            writeCData(Cdata);
-            Serial.println("["+numberString+"]修改成功！亮度重启后生效");
-        }else if (content == "rgb"){
-            Serial.println("RGB Testing......");
-            ledAll(255,0,0);
-            delay(1000);
-            ledAll(0,255,0);
-            delay(1000);
-            ledAll(0,0,255);
-            delay(1000);
-        }else if (content == "delet all ha device")
-        {
-            File file = LittleFS.open("/ha.json", "r");
-            JsonDocument haData;
-            deserializeJson(haData, file);
-            file.close();
-            JsonArray list = haData["discovery_topic"].as<JsonArray>();
-            for (JsonVariant value : list) {
-                String topic = value.as<String>();
-                haClient.publish(topic.c_str(),"");
-                Serial.println("已删除["+topic+"]");
-            }
-        }
-    }
+    bambuLoop();
+    haLoop();
+    serialLoop();
 }
