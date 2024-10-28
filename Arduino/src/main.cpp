@@ -103,8 +103,8 @@ void ledAll(unsigned int color) {//led填充
 }
 
 //连接wifi
-void connectWF(String wn, String wk) {
-    WiFi.begin(wn, wk);
+void connectWF() {
+    WiFi.begin(wifiName, wifiKey);
     Serial.print("连接到wifi [" + String(wifiName) + "]");
     int led = 0;
     int count = 0;
@@ -268,7 +268,7 @@ void connectBambuMQTT() {
         Serial.println("秒后重新连接...");
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("WiFi连接已断开,正在尝试重连...");
-            connectWF(wifiName, wifiKey);
+            connectWF();
         }
     }
 }
@@ -734,7 +734,7 @@ void connectHaMQTT() {
         Serial.println("秒后重新连接...");
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("WiFi连接已断开,正在尝试重连...");
-            connectWF(wifiName, wifiKey);
+            connectWF();
         }
     }
 }
@@ -1090,7 +1090,7 @@ void setup() {
     servo.attach(servoPin,500,2500);
     //servo.write(20);//初始20°方便后续调试
 
-    connectWF(wifiName, wifiKey);
+    connectWF();
     initBambuMQTT();
     initHaMQTT();
     connectHaMQTT();
