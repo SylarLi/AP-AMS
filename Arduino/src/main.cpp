@@ -22,7 +22,7 @@ String ha_mqtt_password;
 
 //-=-=-=-=-=-↓系统配置↓-=-=-=-=-=-=-=-=-=
 bool debug = false;
-String sw_version = "v2.6-beta";
+String sw_version = "v2.6.3";
 String bambu_mqtt_user = "bblp";
 String bambu_mqtt_id = "ams";
 String ha_mqtt_id = "ams";
@@ -69,6 +69,7 @@ bool sameTask;
 bool NeedLoad;
 bool CanPush = false;//用于等待另一通道回抽完毕
 long NeedStopTime = 0;//用于判断是否要发送停止信息
+bool isFisrtTimePull;
 String AmsStatus;
 //-=-=-=-=-=-=end
 
@@ -362,6 +363,7 @@ void bambuCallback(char* topic, byte* payload, unsigned int length) {
                             statePublish("退料超时,请手动操作并检查挤出机状态");
                         }
                     }
+                    isFisrtTimePull = true;
                 }else if (amsStatus == "0"){
                     statePublish("应该拔出耗材,但需要等待拔出结束");
                     leds.setPixelColor(2,leds.Color(0,0,0));
@@ -440,6 +442,7 @@ void bambuCallback(char* topic, byte* payload, unsigned int length) {
                             leds.show();
                         }
                     }
+                    bambuClient.publish(bambu_topic_publish.c_str(),bambu_resume.c_str());
                 }else if (amsStatus == "262" and hwSwitchState == "1"){
                     statePublish("送入成功,停止插入");
                     sv.pull();
@@ -942,7 +945,8 @@ void bambuLoop() {
                 bambuClient.publish(bambu_topic_publish.c_str(),("{\"print\":{\"command\": \"APAMS|"+String(nextFilament)+"|CANPUSH\"}}").c_str());
             }
             NeedStopTime = 0;
-        } else if(mc.getStopState() or sv.getState() == "拉") {
+            isFisrtTimePull = false;
+        } else if((mc.getStopState() or sv.getState() == "拉") and isFisrtTimePull) {
             mc.backforward();
             sv.push();
         }
@@ -985,9 +989,6 @@ void serialLoop() {
 
     if (content=="delet config"){
         if(LittleFS.remove("/config.json")){Serial.println("SUCCESS!");ESP.restart();}
-    }else if (content == "delet data")
-    {
-        if(LittleFS.remove("/data.json")){Serial.println("SUCCESS!");ESP.restart();}
     }else if (content == "delet ha")
     {
         if(LittleFS.remove("/ha.json")){Serial.println("SUCCESS!");ESP.restart();}
